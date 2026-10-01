@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0b57d0">
+<meta name="description" content="Citizen bus timetable finder for Vadodara, built from supplied route and timetable PDFs.">
+<link rel="manifest" href="manifest.webmanifest">
+<title>Vadodara Bus Finder</title>
+<style>
+:root{font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#172033;background:#f5f7fb}
+*{box-sizing:border-box} body{margin:0}.wrap{max-width:920px;margin:auto;padding:18px}
+header{background:#0b57d0;color:white;padding:22px 18px;border-radius:0 0 22px 22px;box-shadow:0 4px 16px #0001}
+h1{margin:0 0 5px;font-size:27px} .sub{opacity:.9}
+.card{background:white;border-radius:18px;padding:18px;margin-top:16px;box-shadow:0 2px 12px #00000010}
+label{display:block;font-weight:700;margin:10px 0 7px} input{width:100%;padding:14px;border:1px solid #ccd3df;border-radius:12px;font-size:16px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:650px){.row{grid-template-columns:1fr}}
+button{border:0;border-radius:12px;padding:13px 17px;font-weight:700;font-size:15px;cursor:pointer}
+.primary{background:#0b57d0;color:#fff;width:100%;margin-top:14px}.secondary{background:#eaf0ff;color:#0b57d0}
+.small{font-size:12px;color:#657084}.result{border:1px solid #e1e6ef;border-radius:15px;padding:15px;margin-top:12px}
+.badge{display:inline-block;background:#edf3ff;color:#0b57d0;padding:4px 8px;border-radius:999px;font-size:12px;font-weight:700}
+.time{font-size:22px;font-weight:800}.muted{color:#667085}.error{color:#b42318;background:#fff0ee;padding:12px;border-radius:10px}
+.stopline{display:flex;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid #eef1f5}.dot{width:9px;height:9px;border-radius:50%;background:#0b57d0}
+footer{padding:24px 4px;color:#697386;font-size:12px}.empty{padding:15px;text-align:center;color:#667085}
+</style>
+</head>
+<body>
+<header><div class="wrap">
+<h1>🚌 Vadodara Bus Finder</h1>
+<div class="sub">Find scheduled buses from the supplied Vadodara timetable data.</div>
+</div></header>
+
+<main class="wrap">
+<section class="card">
+<div class="row">
+<div><label for="from">From</label><input id="from" list="stops" placeholder="e.g. Sayajigunj"></div>
+<div><label for="to">To</label><input id="to" list="stops" placeholder="e.g. Ajwa Garden"></div>
+</div>
+<datalist id="stops"></datalist>
+<button class="primary" onclick="findBuses()">🔎 Find buses</button>
+<div id="message" class="small" style="margin-top:10px"></div>
+</section>
+
+<section id="results"></section>
+
+<section class="card">
+<strong>What this version does</strong>
+<ul>
+<li>Searches the supplied timetable data by origin and destination stop.</li>
+<li>Shows upcoming scheduled trips based on your device clock.</li>
+<li>Shows the stop sequence used by the matching timetable.</li>
+<li>Provides a Google Maps route link without requiring a Maps API key.</li>
+</ul>
+<div class="small">This is a prototype. Timetable anomalies and route/timetable mappings remain under review.</div>
+</section>
+
+<footer>
+Data source: user-supplied Vadodara bus PDFs. This app is an independent citizen information prototype and is not presented as an official VMC/VITCOS service.
+</footer>
+</main>
+
+<script>
+let DB=null;
+fetch("data.json").then(r=>r.json()).then(d=>{
+  DB=d;
+  const dl=document.getElementById("stops");
+  d.stops.forEach(s=>{const o=document.createElement("option");o.value=s;dl.appendChild(o)});
+  document.getElementById("message").textContent=`Loaded ${d.stops.length} unique timetable stop labels.`;
+}).catch(e=>document.getElementById("message").textContent="Could not load the local data file.");
+
+function norm(s){return (s||"").toLowerCase().normalize("NFKC").replace(/[.,()'’\-]/g," ").replace(/\s+/g," ").trim();}
+function matches(name,q){
+  return norm(name)===norm(q) || norm(name).includes(norm(q)) || norm(q).includes(norm(name));
+}
+function mins(t){
+  const m=t.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i); if(!m)return null;
+  let h=+m[1], mi=+m[2]; const ap=m[3].toUpperCase();
+  if(ap==="AM" && h===12)h=0; if(ap==="PM" && h!==12)h+=12;
+  return h*60+mi;
+}
+function nowMins(){const d=new Date();return d.getHours()*60+d.getMinutes();}
+function googleMapsUrl(from,to){
+  return "https://www.google.com/maps/dir/?api=1&origin="+encodeURIComponent(from+", Vadodara, Gujarat, India")+
+         "&destination="+encodeURIComponent(to+", Vadodara, Gujarat, India")+
+         "&travelmode=transit";
+}
+function findBuses(){
+  if(!DB)return;
+  const from=document.getElementById("from").value.trim(), to=document.getElementById("to").value.trim();
+  const box=document.getElementById("results"); box.innerHTML="";
+  if(!from||!to){box.innerHTML='<div class="card error">Please enter both From and To stops.</div>';return}
+  if(norm(from)===norm(to)){box.innerHTML='<div class="card error">From and To cannot be the same.</div>';return}
+  const results=[];
+  for(const svc of DB.timetable_services){
+    for(const trip of svc.trips){
+      const fs=trip.stops.findIndex(s=>matches(s.stop_name_raw,from));
+      const ts=trip.stops.findIndex(s=>matches(s.stop_name_raw,to));
+      if(fs>=0 && ts>fs){
+        const departure=trip.stops[fs].scheduled_time_raw;
+        results.push({svc,trip,fs,ts,departure});
+      }
+    }
+  }
+  if(!results.length){
+    box.innerHTML='<div class="card empty">No direct scheduled trip was found in the supplied timetable data for that origin → destination pair. This prototype does not yet calculate transfers.</div>';
+    return;
+  }
+  const now=nowMins();
+  results.sort((a,b)=>{
+    const am=mins(a.departure), bm=mins(b.departure);
+    const da=am==null?9999:((am-now+1440)%1440), db=bm==null?9999:((bm-now+1440)%1440);
+    return da-db;
+  });
+  const upcoming=results.slice(0,12);
+  let html=`<div class="card"><h2 style="margin-top:0">🚌 ${upcoming.length} matching trips</h2>`;
+  html+=`<div class="small">${from} → ${to} · direct trips only</div>`;
+  for(const r of upcoming){
+    const tripStops=r.trip.stops.slice(r.fs,r.ts+1);
+    const routeLabel=(r.svc.service_name||r.svc.route_label||r.svc.service_id||"Bus service");
+    const maps=googleMapsUrl(from,to);
+    html+=`<div class="result">
+      <span class="badge">${routeLabel}</span>
+      <div style="margin-top:8px"><span class="time">${r.departure}</span> <span class="muted">from ${r.trip.stops[r.fs].stop_name_raw}</span></div>
+      <div class="small" style="margin-top:4px">Trip ${r.trip.trip_no} · ${tripStops.length} stops to destination</div>
+      <details style="margin-top:10px"><summary><strong>View stops</strong></summary>
+      ${tripStops.map((s,i)=>`<div class="stopline"><span class="dot"></span><span>${s.stop_name_raw} <span class="small">${s.scheduled_time_raw}</span></span></div>`).join("")}
+      </details>
+      <div style="margin-top:12px"><a href="${maps}" target="_blank" rel="noopener"><button class="secondary">📍 Open in Google Maps</button></a></div>
+    </div>`;
+  }
+  html+="</div>"; box.innerHTML=html;
+}
+</script>
+</body></html><script>if("serviceWorker" in navigator){navigator.serviceWorker.register("service-worker.js").catch(()=>{});}</script>
